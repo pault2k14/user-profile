@@ -1,71 +1,47 @@
 "use strict";
 
-var AWS = require('aws-sdk');
-var exec = require('child_process').exec;
-var fs = require('fs');
-
-process.env['PATH'] = process.env['PATH'] + ':' +
-    process.env['LAMBDA_TASK_ROOT'];
-
-var s3 = new AWS.S3();
-
-function saveMetadataToS3(body, bucket, key, callback) {
-    console.log("Saving metadata to s3");
-
-    s3.putObject({
-        Bucket: bucket,
-        Key: key,
-        Body: body
-    }, function(error, data){
-        if (error) {
-            callback(error);
-        }
-    });
-}
-
-function extractMetadata(sourceBucket, sourceKey, localFilename, callback) {
-    console.log('Extracting metadata')
-
-    var cmd = 'bin/ffprobe -v quiet -print format json -show_format "/temp/'
-        + localFilename + '"';
-
-    exec(cmd, function(error, stdout, stderr) {
-        if(error === null) {
-            var metadataKey = sourceKey.split('.')[0] + '.json';
-            saveMetadataToS3(stdout, sourceBucket, metadataKey, callback);
-        } else {
-            console.log(stderr);
-            callback(error);
-        }
-    });
-}
-
-function saveFileToFilesystem(sourceBucket, sourceKey, callback) {
-    console.log('Saving to filesystem');
-
-    var localFilename = sourceKey.split('/').pop();
-    var file = fs.createWriteStream('/tmp/' + localFilename);
-
-    var stream = s3.getObject({
-        Bucket: sourceBucket,
-        Key: sourceKey
-    }).createReadStream().pipe(file);
-
-    stream.on('error', function(error){
-        callback(error);
-    });
-
-    stream.on('close', function() {
-        extractMetadata(sourceBucket, sourceKey, localFilename, callback);
-    });
-}
+var jwt = require('jsonwebtoken');
+var request = require('request');
 
 exports.handler = function(event, context, callback) {
-    var message = JSON.parse(event.Records[0].Sns.Message);
 
-    var sourceBucket = message.Records[0].s3.bucket.name;
-    var sourceKey =
-        decodeURIComponent(message.Records[0].s3.object.key.replace(/\+/g, " "));
+    if(!event.authToken) {
+        console.log(JSON.stringify(event));
+        callback('Could not find authToken');
+        return;
+    }
 
-    saveFileToFilesystem(sourceBucket, sourceKey, callback);
-}
+    if(!event.accessToken) {
+        console.log(JSON.stringify(event));
+        callback('Could not find access_token');
+        return;
+    }
+
+    console.log(JSON.stringify(event));
+
+    var id_token = event.authToken.split(' ')[1];
+    var access_token = event.accessToken;
+
+    var body = {
+        'id_token': id_token,
+        'access_token': access_token
+    };
+
+    var options = {
+        url: 'https://' + process.env.DOMAIN + '/userinfo',
+        method: 'GET',
+        json: true,
+        body: body
+    };
+
+    request(options, function(error, response, body) {
+        console.log("Response0: " + JSON.stringify(response));
+
+        if(!error && response.statusCode === 200) {
+            console.log("Response1: " + JSON.stringify(response));
+            callback(null, body);
+        } else {
+            callback(error);
+        }
+    });
+};
